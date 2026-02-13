@@ -18,13 +18,23 @@ import {
   NationEmojiBehavior,
 } from "./NationEmojiBehavior";
 
+// Import type only to avoid circular runtime dependency
+import type { AiAttackBehavior } from "../utils/AiAttackBehavior";
+
 export class NationAllianceBehavior {
+  private attackBehavior: AiAttackBehavior | null = null;
+
   constructor(
     private random: PseudoRandom,
     private game: Game,
     private player: Player,
     private emojiBehavior: NationEmojiBehavior,
   ) {}
+
+  /** Set after construction to avoid circular dependency */
+  setAttackBehavior(attackBehavior: AiAttackBehavior): void {
+    this.attackBehavior = attackBehavior;
+  }
 
   handleAllianceRequests() {
     for (const req of this.player.incomingAllianceRequests()) {
@@ -101,6 +111,15 @@ export class NationAllianceBehavior {
       }
       if (isResponse && this.random.chance(6)) {
         this.emojiBehavior.sendEmoji(otherPlayer, EMOJI_LOVE);
+      }
+      return true;
+    }
+    // Accept truce if we're stuck in a stalled conflict with this player
+    // and other threats are growing - no point grinding each other down
+    // while a third party wins
+    if (this.shouldAcceptStalledConflictTruce(otherPlayer)) {
+      if (isResponse && this.random.chance(3)) {
+        this.emojiBehavior.sendEmoji(otherPlayer, EMOJI_HANDSHAKE);
       }
       return true;
     }
@@ -407,6 +426,56 @@ export class NationAllianceBehavior {
     }
 
     return false;
+  }
+
+  /**
+   * Check if we should accept a truce (alliance) because we're stuck
+   * in a stalled conflict and other players are pulling ahead.
+   */
+  private shouldAcceptStalledConflictTruce(otherPlayer: Player): boolean {
+    if (!this.attackBehavior) return false;
+
+    const { difficulty } = this.game.config().gameConfig();
+    if (difficulty === Difficulty.Easy) return false;
+
+    // Check if we're in a stalled conflict with this player
+    if (!this.attackBehavior.isConflictStalled(otherPlayer)) return false;
+
+    // Check if other non-allied players are growing while we grind
+    const ourTiles = this.player.numTilesOwned();
+    let othersGrowing = false;
+    for (const other of this.game.players()) {
+      if (other === this.player) continue;
+      if (other === otherPlayer) continue;
+      if (this.player.isFriendly(other)) continue;
+      if (!other.isAlive()) continue;
+
+      // Thresholds by difficulty - smarter AI recognizes growing threats earlier
+      // Using integer math to avoid float desyncs
+      let threatening: boolean;
+      switch (difficulty) {
+        case Difficulty.Medium:
+          // other > 2x our tiles
+          threatening = other.numTilesOwned() > ourTiles * 2;
+          break;
+        case Difficulty.Hard:
+          // other > 1.5x our tiles (other * 2 > our * 3)
+          threatening = other.numTilesOwned() * 2 > ourTiles * 3;
+          break;
+        case Difficulty.Impossible:
+          // other > 1.3x our tiles (other * 10 > our * 13)
+          threatening = other.numTilesOwned() * 10 > ourTiles * 13;
+          break;
+        default:
+          threatening = false;
+      }
+      if (threatening) {
+        othersGrowing = true;
+        break;
+      }
+    }
+
+    return othersGrowing;
   }
 
   private betray(target: Player): void {

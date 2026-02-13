@@ -18,6 +18,7 @@ import {
   boundingBoxCenter,
   calculateBoundingBoxCenter,
 } from "../../Util";
+import { AllianceRequestExecution } from "../alliance/AllianceRequestExecution";
 import { AttackExecution } from "../AttackExecution";
 import { DonateTroopsExecution } from "../DonateTroopExecution";
 import { NationAllianceBehavior } from "../nation/NationAllianceBehavior";
@@ -26,13 +27,25 @@ import {
   EMOJI_ASSIST_RELATION_TOO_LOW,
   EMOJI_ASSIST_TARGET_ALLY,
   EMOJI_ASSIST_TARGET_ME,
+  EMOJI_HANDSHAKE,
   NationEmojiBehavior,
 } from "../nation/NationEmojiBehavior";
 import { TransportShipExecution } from "../TransportShipExecution";
 import { closestTwoTiles } from "../Util";
 
+interface ConflictSnapshot {
+  startTick: number;
+  ourTilesAtStart: number;
+  theirTilesAtStart: number;
+  ourTilesAtLastCheck: number;
+  theirTilesAtLastCheck: number;
+  lastCheckTick: number;
+  stalledChecks: number; // consecutive checks with no meaningful progress
+}
+
 export class AiAttackBehavior {
   private botAttackTroopsSent: number = 0;
+  private conflictTracking: Map<PlayerID, ConflictSnapshot> = new Map();
 
   constructor(
     private random: PseudoRandom,
@@ -49,6 +62,9 @@ export class AiAttackBehavior {
     if (this.player === null || this.allianceBehavior === undefined) {
       throw new Error("not initialized");
     }
+
+    // Update conflict progress tracking
+    this.updateConflictTracking();
 
     const border = Array.from(this.player.borderTiles())
       .flatMap((t) => this.game.neighbors(t))
@@ -77,6 +93,11 @@ export class AiAttackBehavior {
     );
     if (hasNonNukedTerraNullius) {
       this.sendAttack(this.game.terraNullius());
+      return;
+    }
+
+    // Try to seek peace with stalled conflict enemies before attacking
+    if (this.seekPeaceWithStalledEnemies(borderingEnemies)) {
       return;
     }
 
@@ -284,6 +305,13 @@ export class AiAttackBehavior {
         const other = relation.player;
         if (this.player.isFriendly(other)) continue;
         if (other.troops() > this.player.troops() * 3) continue;
+        // Skip stalled conflicts when other threats are growing
+        if (
+          this.isConflictStalled(other) &&
+          this.areOtherThreatsGrowing(other)
+        ) {
+          continue;
+        }
         this.sendAttack(other);
         return true;
       }
@@ -301,12 +329,23 @@ export class AiAttackBehavior {
 
     const weakest = (): boolean => {
       if (borderingEnemies.length > 0) {
-        // borderingEnemies is already sorted by troops (ascending), so first match is weakest
-        const weakest = borderingEnemies[0];
-        // Don't attack if they have more troops than us
-        if (weakest.troops() < this.player.troops()) {
-          this.sendAttack(weakest);
-          return true;
+        // Filter out stalled enemies when other threats are growing
+        const candidates = borderingEnemies.filter(
+          (e) => !(this.isConflictStalled(e) && this.areOtherThreatsGrowing(e)),
+        );
+        if (candidates.length > 0) {
+          // candidates is sorted by troops (ascending), so first match is weakest
+          const weakest = candidates[0];
+          // Don't attack if they have more troops than us
+          if (weakest.troops() < this.player.troops()) {
+            // Smarter AI avoids starting new fights with near-equal enemies
+            // when third parties are pulling ahead
+            if (this.shouldAvoidNewEngagement(weakest)) {
+              return false;
+            }
+            this.sendAttack(weakest);
+            return true;
+          }
         }
       }
       return false;
@@ -509,6 +548,14 @@ export class AiAttackBehavior {
     return (
       borderingEnemies.find((enemy) => {
         if (enemy.troops() > this.player.troops() * 1.2) return false;
+
+        // Skip stalled conflicts when other threats are growing
+        if (
+          this.isConflictStalled(enemy) &&
+          this.areOtherThreatsGrowing(enemy)
+        ) {
+          return false;
+        }
 
         const totalIncomingTroops = enemy
           .incomingAttacks()
@@ -888,5 +935,199 @@ export class AiAttackBehavior {
     );
 
     return true;
+  }
+
+  // ========== Conflict Tracking & Stalemate Detection ==========
+
+  /**
+   * Updates conflict tracking for all active engagements.
+   * Called at the start of each maybeAttack() cycle.
+   */
+  private updateConflictTracking(): void {
+    const currentTick = this.game.ticks();
+
+    // Identify all players we're actively fighting (attacking or being attacked by)
+    const activeEnemyIds = new Set<PlayerID>();
+    for (const attack of this.player.outgoingAttacks()) {
+      const target = attack.target();
+      if (target.isPlayer()) {
+        activeEnemyIds.add(target.id());
+      }
+    }
+    for (const attack of this.player.incomingAttacks()) {
+      activeEnemyIds.add(attack.attacker().id());
+    }
+
+    // Start tracking new conflicts
+    for (const enemyId of activeEnemyIds) {
+      if (!this.conflictTracking.has(enemyId)) {
+        const enemy = this.game.player(enemyId);
+        this.conflictTracking.set(enemyId, {
+          startTick: currentTick,
+          ourTilesAtStart: this.player.numTilesOwned(),
+          theirTilesAtStart: enemy.numTilesOwned(),
+          ourTilesAtLastCheck: this.player.numTilesOwned(),
+          theirTilesAtLastCheck: enemy.numTilesOwned(),
+          lastCheckTick: currentTick,
+          stalledChecks: 0,
+        });
+      }
+    }
+
+    // Remove tracking for conflicts that have ended
+    for (const [enemyId] of this.conflictTracking) {
+      if (!activeEnemyIds.has(enemyId)) {
+        this.conflictTracking.delete(enemyId);
+      }
+    }
+
+    // Periodically evaluate progress for active conflicts
+    const checkInterval = 300; // ~30 seconds at 10 ticks/sec
+    for (const [enemyId, snapshot] of this.conflictTracking) {
+      if (currentTick - snapshot.lastCheckTick < checkInterval) continue;
+
+      const enemy = this.game.player(enemyId);
+      const currentOurTiles = this.player.numTilesOwned();
+      const currentTheirTiles = enemy.numTilesOwned();
+
+      // Check if meaningful progress has been made since last check
+      // Using integer math: change * 20 < total means change < 5%
+      const ourChange = Math.abs(
+        currentOurTiles - snapshot.ourTilesAtLastCheck,
+      );
+      const theirChange = Math.abs(
+        currentTheirTiles - snapshot.theirTilesAtLastCheck,
+      );
+
+      const ourProgressMinimal = ourChange * 20 < currentOurTiles;
+      const theirProgressMinimal = theirChange * 20 < currentTheirTiles;
+
+      if (ourProgressMinimal && theirProgressMinimal) {
+        snapshot.stalledChecks++;
+      } else {
+        // Reset stalled counter if progress is being made
+        snapshot.stalledChecks = Math.max(0, snapshot.stalledChecks - 1);
+      }
+
+      snapshot.ourTilesAtLastCheck = currentOurTiles;
+      snapshot.theirTilesAtLastCheck = currentTheirTiles;
+      snapshot.lastCheckTick = currentTick;
+    }
+  }
+
+  /**
+   * Returns true if the conflict with the given enemy is stalled
+   * (no meaningful territory changes for a sustained period).
+   */
+  isConflictStalled(enemy: Player): boolean {
+    const snapshot = this.conflictTracking.get(enemy.id());
+    if (!snapshot) return false;
+
+    const { difficulty } = this.game.config().gameConfig();
+
+    // Minimum conflict duration before we consider it stalled (~1 minute)
+    const minDuration = 600;
+    if (this.game.ticks() - snapshot.startTick < minDuration) return false;
+
+    // Number of consecutive stalled checks needed varies by difficulty
+    // Smarter AI recognizes stalemates faster
+    let stalledThreshold: number;
+    switch (difficulty) {
+      case Difficulty.Easy:
+        return false; // Easy AI doesn't recognize stalemates
+      case Difficulty.Medium:
+        stalledThreshold = 4; // ~2 minutes of no progress
+        break;
+      case Difficulty.Hard:
+        stalledThreshold = 3; // ~1.5 minutes of no progress
+        break;
+      case Difficulty.Impossible:
+        stalledThreshold = 2; // ~1 minute of no progress
+        break;
+      default:
+        assertNever(difficulty);
+    }
+
+    return snapshot.stalledChecks >= stalledThreshold;
+  }
+
+  /**
+   * Returns true if other non-allied players are growing significantly
+   * while we're stuck in a stalled conflict.
+   */
+  private areOtherThreatsGrowing(excludePlayer?: Player): boolean {
+    const ourTiles = this.player.numTilesOwned();
+
+    for (const other of this.game.players()) {
+      if (other === this.player) continue;
+      if (excludePlayer && other === excludePlayer) continue;
+      if (this.player.isFriendly(other)) continue;
+      if (!other.isAlive()) continue;
+
+      // If any non-allied player has significantly more territory than us,
+      // they're a growing threat. Use integer math: other * 2 > our * 3
+      // means other > 1.5x ours
+      if (other.numTilesOwned() * 2 > ourTiles * 3) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Attempt to seek peace with stalled conflict opponents.
+   * Returns true if peace-seeking was initiated (should skip normal attacks).
+   */
+  private seekPeaceWithStalledEnemies(borderingEnemies: Player[]): boolean {
+    if (this.allianceBehavior === undefined || this.emojiBehavior === undefined)
+      return false;
+
+    const { difficulty } = this.game.config().gameConfig();
+    if (difficulty === Difficulty.Easy) return false;
+
+    for (const enemy of borderingEnemies) {
+      if (!this.isConflictStalled(enemy)) continue;
+      if (!this.areOtherThreatsGrowing(enemy)) continue;
+
+      // Try to send an alliance request (truce) to the stalled enemy
+      if (this.player.canSendAllianceRequest(enemy)) {
+        this.game.addExecution(
+          new AllianceRequestExecution(this.player, enemy.id()),
+        );
+        this.emojiBehavior.sendEmoji(enemy, EMOJI_HANDSHAKE);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Evaluates whether starting a new engagement with a target is strategically unwise.
+   * Avoids picking fights with near-equal enemies when third parties are pulling ahead.
+   * Only applies to Hard/Impossible difficulty.
+   */
+  private shouldAvoidNewEngagement(target: Player): boolean {
+    const { difficulty } = this.game.config().gameConfig();
+
+    // Easy and Medium AI don't have this strategic awareness
+    if (difficulty === Difficulty.Easy || difficulty === Difficulty.Medium) {
+      return false;
+    }
+
+    // Only avoid if we're NOT already fighting this target
+    // (if we already committed, the stalled conflict check handles it)
+    const alreadyFighting = this.conflictTracking.has(target.id());
+    if (alreadyFighting) return false;
+
+    // Check if the target is close in strength (likely to stalemate)
+    // target > 60% of our troops means they can likely resist effectively
+    const targetStrength = target.troops();
+    const ourStrength = this.player.troops();
+    const isNearEqual = targetStrength * 5 > ourStrength * 3; // target > 60% of ours
+
+    if (!isNearEqual) return false;
+
+    // Only avoid if other threats are growing
+    return this.areOtherThreatsGrowing(target);
   }
 }

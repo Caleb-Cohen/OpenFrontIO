@@ -204,6 +204,8 @@ export class NationExecution implements Execution {
       this.allianceBehavior,
       this.emojiBehavior,
     );
+    // Wire up cross-reference for stalled conflict detection in alliance decisions
+    this.allianceBehavior.setAttackBehavior(this.attackBehavior);
     this.nukeBehavior = new NationNukeBehavior(
       this.random,
       this.mg,
