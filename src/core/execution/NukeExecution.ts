@@ -314,8 +314,7 @@ export class NukeExecution implements Execution {
         unit.type() !== UnitType.AtomBomb &&
         unit.type() !== UnitType.HydrogenBomb &&
         unit.type() !== UnitType.MIRVWarhead &&
-        unit.type() !== UnitType.MIRV &&
-        unit.type() !== UnitType.SAMMissile
+        unit.type() !== UnitType.MIRV
       ) {
         if (this.mg.euclideanDistSquared(this.dst, unit.tile()) < outer2) {
           unit.delete(true, this.player);
