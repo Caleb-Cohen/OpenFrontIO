@@ -57,6 +57,8 @@ class StructureRenderInfo {
 }
 
 export class StructureIconsLayer implements Layer {
+  private loicCachedCost: bigint = 0n;
+
   private ghostUnit: {
     container: PIXI.Container;
     priceText: PIXI.BitmapText;
@@ -199,6 +201,68 @@ export class StructureIconsLayer implements Layer {
       });
     this.renderSprites =
       this.game.config().userSettings()?.structureSprites() ?? true;
+    this.tickLOIC();
+  }
+
+  private tickLOIC() {
+    if (
+      !this.uiState.loicActive ||
+      !this.uiState.loicTargetTile ||
+      !this.uiState.loicUnitType
+    )
+      return;
+
+    const player = this.game.myPlayer();
+    if (!player || !player.isAlive()) {
+      this.stopLOIC();
+      return;
+    }
+
+    if (this.game.ticks() % 5 !== 0) return;
+
+    // Refresh cost cache asynchronously for next tick's check
+    player
+      .actions(this.uiState.loicTargetTile, [this.uiState.loicUnitType])
+      .then((actions) => {
+        const unit = actions.buildableUnits.find(
+          (u) => u.type === this.uiState.loicUnitType,
+        );
+        this.loicCachedCost = unit?.cost ?? 0n;
+      });
+
+    // Use cached cost for affordability (0n means not yet loaded — let server validate)
+    if (this.loicCachedCost > 0n && player.gold() < this.loicCachedCost) {
+      this.stopLOIC();
+      return;
+    }
+
+    const availableSilos = player
+      .units(UnitType.MissileSilo)
+      .filter((s) => !s.isUnderConstruction() && s.missileReadinesss() > 0);
+
+    if (availableSilos.length === 0) return;
+
+    const unitType = this.uiState.loicUnitType;
+    const tileRef = this.uiState.loicTargetTile;
+    const rocketDirectionUp = this.uiState.rocketDirectionUp;
+
+    let numToFire = availableSilos.length;
+    if (this.loicCachedCost > 0n) {
+      const affordable = Number(player.gold() / this.loicCachedCost);
+      numToFire = Math.min(availableSilos.length, affordable);
+    }
+
+    for (let i = 0; i < numToFire; i++) {
+      this.eventBus.emit(
+        new BuildUnitIntentEvent(unitType, tileRef, rocketDirectionUp),
+      );
+    }
+  }
+
+  private stopLOIC() {
+    this.uiState.loicActive = false;
+    this.uiState.loicTargetTile = null;
+    this.uiState.loicUnitType = null;
   }
 
   redraw() {
