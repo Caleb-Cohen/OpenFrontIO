@@ -409,12 +409,33 @@ export class StructureIconsLayer implements Layer {
         unitType === UnitType.AtomBomb || unitType === UnitType.HydrogenBomb
           ? this.uiState.rocketDirectionUp
           : undefined;
+      const tileRef = this.game.ref(tile.x, tile.y);
+
+      if (
+        this.uiState.loicActive &&
+        (unitType === UnitType.AtomBomb || unitType === UnitType.HydrogenBomb)
+      ) {
+        this.uiState.loicTargetTile = tileRef;
+        this.uiState.loicUnitType = unitType;
+        const player = this.game.myPlayer();
+        const availableSilos = player
+          ? player
+              .units(UnitType.MissileSilo)
+              .filter(
+                (s) => !s.isUnderConstruction() && s.missileReadinesss() > 0,
+              )
+          : [];
+        for (let i = 0; i < availableSilos.length; i++) {
+          this.eventBus.emit(
+            new BuildUnitIntentEvent(unitType, tileRef, rocketDirectionUp),
+          );
+        }
+        // Keep ghost active for visual feedback during LOIC mode
+        return;
+      }
+
       this.eventBus.emit(
-        new BuildUnitIntentEvent(
-          unitType,
-          this.game.ref(tile.x, tile.y),
-          rocketDirectionUp,
-        ),
+        new BuildUnitIntentEvent(unitType, tileRef, rocketDirectionUp),
       );
     }
     this.removeGhostStructure();
