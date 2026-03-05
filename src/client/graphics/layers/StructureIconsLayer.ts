@@ -300,6 +300,12 @@ export class StructureIconsLayer implements Layer {
         this.uiState.ghostStructure !== this.ghostUnit.buildableUnit.type
       ) {
         this.clearGhostStructure();
+        if (
+          this.uiState.ghostStructure !== UnitType.AtomBomb &&
+          this.uiState.ghostStructure !== UnitType.HydrogenBomb
+        ) {
+          this.stopLOIC();
+        }
       }
     } else if (this.uiState.ghostStructure !== null) {
       this.createGhostStructure(this.uiState.ghostStructure);
@@ -635,6 +641,7 @@ export class StructureIconsLayer implements Layer {
 
   private removeGhostStructure() {
     this.clearGhostStructure();
+    this.stopLOIC();
     this.uiState.ghostStructure = null;
     this.eventBus.emit(new GhostStructureChangedEvent(null));
   }
