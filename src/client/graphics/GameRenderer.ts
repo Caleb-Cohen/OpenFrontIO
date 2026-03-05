@@ -60,6 +60,9 @@ export function createRenderer(
     overlappingRailroads: [],
     ghostRailPaths: [],
     rocketDirectionUp: true,
+    loicActive: false,
+    loicTargetTile: null,
+    loicUnitType: null,
   };
 
   //hide when the game renders
