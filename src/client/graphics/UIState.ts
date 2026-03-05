@@ -7,4 +7,7 @@ export interface UIState {
   overlappingRailroads: number[];
   ghostRailPaths: TileRef[][];
   rocketDirectionUp: boolean;
+  loicActive: boolean;
+  loicTargetTile: TileRef | null;
+  loicUnitType: UnitType | null;
 }
