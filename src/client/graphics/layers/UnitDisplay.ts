@@ -214,6 +214,29 @@ export class UnitDisplay extends LitElement implements Layer {
             )}
           </div>
         </div>
+        ${this.uiState.ghostStructure === UnitType.AtomBomb ||
+        this.uiState.ghostStructure === UnitType.HydrogenBomb
+          ? html`
+              <div
+                class="backdrop-blur-xs rounded-lg p-0.5 w-fit cursor-pointer select-none border ${this.uiState.loicActive
+                  ? "bg-red-700/90 border-red-400"
+                  : "bg-gray-800/70 border-red-600"} text-white font-bold px-3 py-1 text-sm"
+                @click=${() => {
+                  if (this.uiState.loicActive) {
+                    this.uiState.loicActive = false;
+                    this.uiState.loicTargetTile = null;
+                    this.uiState.loicUnitType = null;
+                  } else {
+                    this.uiState.loicActive = true;
+                    this.uiState.loicUnitType = this.uiState.ghostStructure;
+                  }
+                  this.requestUpdate();
+                }}
+              >
+                LOIC
+              </div>
+            `
+          : null}
       </div>
     `;
   }
