@@ -218,17 +218,17 @@ export class StructureIconsLayer implements Layer {
       return;
     }
 
-    if (this.game.ticks() % 5 !== 0) return;
-
-    // Refresh cost cache asynchronously for next tick's check
-    player
-      .actions(this.uiState.loicTargetTile, [this.uiState.loicUnitType])
-      .then((actions) => {
-        const unit = actions.buildableUnits.find(
-          (u) => u.type === this.uiState.loicUnitType,
-        );
-        this.loicCachedCost = unit?.cost ?? 0n;
-      });
+    // Refresh cost cache every 5 ticks
+    if (this.game.ticks() % 5 === 0) {
+      player
+        .actions(this.uiState.loicTargetTile, [this.uiState.loicUnitType])
+        .then((actions) => {
+          const unit = actions.buildableUnits.find(
+            (u) => u.type === this.uiState.loicUnitType,
+          );
+          this.loicCachedCost = unit?.cost ?? 0n;
+        });
+    }
 
     // Use cached cost for affordability (0n means not yet loaded — let server validate)
     if (this.loicCachedCost > 0n && player.gold() < this.loicCachedCost) {
@@ -236,25 +236,24 @@ export class StructureIconsLayer implements Layer {
       return;
     }
 
-    const availableSilos = player
+    const readySilos = player
       .units(UnitType.MissileSilo)
-      .filter((s) => !s.isUnderConstruction() && s.missileReadinesss() > 0);
+      .filter((s) => s.canFire());
 
-    if (availableSilos.length === 0) return;
+    if (readySilos.length === 0) return;
 
-    const unitType = this.uiState.loicUnitType;
-    const tileRef = this.uiState.loicTargetTile;
-    const rocketDirectionUp = this.uiState.rocketDirectionUp;
+    // Fire one intent per available silo so they all launch on the same tick
+    const affordable = this.loicCachedCost > 0n
+      ? Math.min(readySilos.length, Number(player.gold() / this.loicCachedCost))
+      : readySilos.length;
 
-    let numToFire = availableSilos.length;
-    if (this.loicCachedCost > 0n) {
-      const affordable = Number(player.gold() / this.loicCachedCost);
-      numToFire = Math.min(availableSilos.length, affordable);
-    }
-
-    for (let i = 0; i < numToFire; i++) {
+    for (let i = 0; i < affordable; i++) {
       this.eventBus.emit(
-        new BuildUnitIntentEvent(unitType, tileRef, rocketDirectionUp),
+        new BuildUnitIntentEvent(
+          this.uiState.loicUnitType,
+          this.uiState.loicTargetTile,
+          this.uiState.rocketDirectionUp,
+        ),
       );
     }
   }
@@ -487,19 +486,10 @@ export class StructureIconsLayer implements Layer {
       ) {
         this.uiState.loicTargetTile = tileRef;
         this.uiState.loicUnitType = unitType;
-        const player = this.game.myPlayer();
-        const availableSilos = player
-          ? player
-              .units(UnitType.MissileSilo)
-              .filter(
-                (s) => !s.isUnderConstruction() && s.missileReadinesss() > 0,
-              )
-          : [];
-        for (let i = 0; i < availableSilos.length; i++) {
-          this.eventBus.emit(
-            new BuildUnitIntentEvent(unitType, tileRef, rocketDirectionUp),
-          );
-        }
+        // Fire first nuke immediately, tick loop handles the rest
+        this.eventBus.emit(
+          new BuildUnitIntentEvent(unitType, tileRef, rocketDirectionUp),
+        );
         // Keep ghost active for visual feedback during LOIC mode
         return;
       }

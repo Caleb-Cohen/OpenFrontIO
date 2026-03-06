@@ -221,6 +221,7 @@ export class UnitDisplay extends LitElement implements Layer {
                 class="backdrop-blur-xs rounded-lg p-0.5 w-fit cursor-pointer select-none border ${this.uiState.loicActive
                   ? "bg-red-700/90 border-red-400"
                   : "bg-gray-800/70 border-red-600"} text-white font-bold px-3 py-1 text-sm"
+                @pointerup=${(e: Event) => e.stopPropagation()}
                 @click=${() => {
                   if (this.uiState.loicActive) {
                     this.uiState.loicActive = false;
@@ -235,6 +236,32 @@ export class UnitDisplay extends LitElement implements Layer {
               >
                 LOIC
               </div>
+              ${this.uiState.loicActive
+                ? html`
+                    <div
+                      class="bg-gray-900/80 backdrop-blur-xs rounded-lg px-2 py-1 text-xs text-gray-300 font-mono"
+                    >
+                      ${(() => {
+                        const player = this.game?.myPlayer();
+                        if (!player) return "no player";
+                        const silos = player.units(UnitType.MissileSilo);
+                        const readySlots = silos.reduce(
+                          (sum, s) => sum + s.availableMissileSlots(),
+                          0,
+                        );
+                        const totalSlots = silos.reduce(
+                          (sum, s) => sum + s.level(),
+                          0,
+                        );
+                        return html`slots: ${readySlots}/${totalSlots} ready |
+                          gold: ${renderNumber(player.gold())} | target:
+                          ${this.uiState.loicTargetTile != null
+                            ? "set"
+                            : "none"}`;
+                      })()}
+                    </div>
+                  `
+                : null}
             `
           : null}
       </div>

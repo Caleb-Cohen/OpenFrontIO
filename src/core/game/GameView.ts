@@ -135,6 +135,20 @@ export class UnitView {
     return this.data.targetTile;
   }
 
+  // Whether this silo has at least one missile ready to fire.
+  canFire(): boolean {
+    return (
+      !this.isUnderConstruction() &&
+      this.data.missileTimerQueue.length < this.data.level
+    );
+  }
+
+  // Number of missile slots currently ready to fire.
+  availableMissileSlots(): number {
+    if (this.isUnderConstruction()) return 0;
+    return Math.max(0, this.data.level - this.data.missileTimerQueue.length);
+  }
+
   // How "ready" this unit is from 0 to 1.
   missileReadinesss(): number {
     const maxMissiles = this.data.level;
